@@ -20,7 +20,3 @@ output "security_group_ids" {
 output "subnet_id" {
     value = aws_subnet.main.id
 }
-
-output "public_ip" {
-    value = aws_instance.main.public_ip
-}

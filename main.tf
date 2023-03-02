@@ -20,7 +20,10 @@ locals {
     cidr_block = "172.24.10.0/24"
     name = "NetSPI"
     key_name = lower("${local.name}_key")
+    key_file_path = "./assets/${local.key_name}"
     mnt_point = "/data/test"
+    shell_file = "./assets/user_data.sh"
+    efs_utils_path = "/tmp/efs-utils"
 }
 
 resource "tls_private_key" "main" {
@@ -30,18 +33,29 @@ resource "tls_private_key" "main" {
 
 resource "local_file" "private_key" {
     content = tls_private_key.main.private_key_openssh
-    filename = "./assets/${local.key_name}"
+    filename = "${local.key_file_path}"
+    provisioner "local-exec" {
+        command = "chmod 400 ${local.key_file_path}"
+    }
 }
 
 resource "local_file" "public_key" {
     content = tls_private_key.main.public_key_openssh
-    filename = "./assets/${local.key_name}.pub"
+    filename = "${local.key_file_path}.pub"
 }
 
 resource "aws_s3_bucket" "main" {
     bucket = lower("${local.name}-challenge-bucket")
     force_destroy = true
 }
+
+# resource "aws_s3_access_point" "main" {
+#     bucket = aws_s3_bucket.main.id
+#     name = lower("${local.name}-access-point")
+#     vpc_configuration {
+#       vpc_id = aws_vpc.main.id
+#     }
+# }
 
 resource "aws_s3_bucket_public_access_block" "main" {
     bucket = aws_s3_bucket.main.id
@@ -193,9 +207,60 @@ resource "aws_eip_association" "main" {
     allocation_id = var.elastic_ip_id
 }
 
+resource "aws_iam_policy" "main" {
+    name = lower("${local.name}-ec2-policy")
+    path = "/"
+    description = "Provides S3 permissions to EC2"
+    policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [
+            {
+                Effect = "Allow"
+                Action = [
+                    "s3:GetObject",
+                    "s3:PutObject",
+                ]
+                Resource = "${aws_s3_bucket.main.arn}/*"
+            },
+            {
+                Effect = "Allow"
+                Action = "s3:ListBucket"
+                Resource = "${aws_s3_bucket.main.arn}"
+            }
+        ]
+    })
+}
+
+resource "aws_iam_role" "main" {
+    name = lower("${local.name}-ec2-role")
+    assume_role_policy = jsonencode({
+        Version = "2012-10-17"
+        Statement = [{
+            Action = "sts:AssumeRole"
+            Effect = "Allow"
+            Sid = "${local.name}EC2Role"
+            Principal = {
+                Service = "ec2.amazonaws.com"
+            }
+        }]
+    })
+}
+
+resource "aws_iam_policy_attachment" "main" {
+    name = lower("${local.name}-ec2-attachment")
+    roles = [aws_iam_role.main.name]
+    policy_arn = aws_iam_policy.main.arn
+}
+
+resource "aws_iam_instance_profile" "main" {
+    name = lower("${local.name}-profile")
+    role = aws_iam_role.main.name
+}
+
 resource "aws_instance" "main" {
     ami = data.aws_ami.ubuntu.id
     instance_type = "t2.micro"
+    iam_instance_profile = aws_iam_instance_profile.main.name
     availability_zone = local.default_az
     key_name = aws_key_pair.main.key_name
 
@@ -208,22 +273,51 @@ resource "aws_instance" "main" {
 
     subnet_id = aws_subnet.main.id
     security_groups = [aws_security_group.main.id]
-    user_data = <<EOL
-    #!/bin/bash
-    sudo apt-get -y update
-    sudo apt-get -y install git binutils
-    git clone https://github.com/aws/efs-utils
-    cd /home/ubuntu/efs-utils
-    ./build-deb.sh
-    sudo apt-get -y install ./build/amazon-efs-utils*deb
-    sudo mkdir ${local.mnt_point}
-    sudo mount -t efs -o tls ${aws_efs_file_system.main.dns_name} ${local.mnt_point}/
-    EOL
+
+    tags = {
+        Name = lower("${local.name}-ec2")
+    }
 
     lifecycle {
         ignore_changes = [
             root_block_device[0].kms_key_id,
             security_groups
+        ]
+    }
+}
+
+data "aws_efs_mount_target" "main" {
+    mount_target_id = aws_efs_mount_target.main.id
+}
+
+resource "null_resource" "configure_efs" {
+    depends_on = [aws_efs_mount_target.main, aws_instance.main, local_file.private_key]
+    connection {
+        type = "ssh"
+        user = "ubuntu"
+        private_key = local_file.private_key.content
+        host = data.aws_eip.main.public_ip
+    }
+    provisioner "remote-exec" {
+        inline = [
+            "sudo apt-get -y update",
+            "sudo apt-get -y install git binutils python3-pip",
+            "sudo apt-get -y install awscli",
+            "sudo pip3 install botocore",
+            "git clone https://github.com/aws/efs-utils ${local.efs_utils_path}",
+            "chmod 755 ${local.efs_utils_path}",
+            "cd ${local.efs_utils_path}",
+            "./build-deb.sh",
+            "sudo apt-get -y install ./build/amazon-efs-utils*deb",
+            "sudo mkdir /data",
+            "cd /data",
+            "sudo mkdir test",
+            "cd /",
+            "sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport ${data.aws_efs_mount_target.main.ip_address}:/ ${local.mnt_point}",
+            "sudo chmod 777 /etc/fstab",
+            "sudo echo '${data.aws_efs_mount_target.main.ip_address}:/ ${local.mnt_point} nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport,_netdev 0 0' >> /etc/fstab",
+            "sudo chmod 644 /etc/fstab",
+            "sudo chmod 777 ${local.mnt_point}"
         ]
     }
 }

@@ -1,0 +1,6 @@
+access_key = "$up3r$3cr3t@cc3$$"
+secret_key = "$up3r$3cr3t@cc3$$"
+elastic_ip_id = "elastic_ip_id"
+allowed_cidr_blocks = [
+    "32.32.32.32/32"
+]
