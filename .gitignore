@@ -1,0 +1,6 @@
+.terraform/
+*.zip
+*.tfvars
+*.tfstate
+*.tfstate.backup
+assets/
