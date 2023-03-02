@@ -22,7 +22,6 @@ locals {
     key_name = lower("${local.name}_key")
     key_file_path = "./assets/${local.key_name}"
     mnt_point = "/data/test"
-    shell_file = "./assets/user_data.sh"
     efs_utils_path = "/tmp/efs-utils"
 }
 
@@ -48,14 +47,6 @@ resource "aws_s3_bucket" "main" {
     bucket = lower("${local.name}-challenge-bucket")
     force_destroy = true
 }
-
-# resource "aws_s3_access_point" "main" {
-#     bucket = aws_s3_bucket.main.id
-#     name = lower("${local.name}-access-point")
-#     vpc_configuration {
-#       vpc_id = aws_vpc.main.id
-#     }
-# }
 
 resource "aws_s3_bucket_public_access_block" "main" {
     bucket = aws_s3_bucket.main.id
